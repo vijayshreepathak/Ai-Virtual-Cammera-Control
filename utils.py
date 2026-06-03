@@ -5,13 +5,17 @@ from __future__ import annotations
 import json
 import os
 import re
+from pathlib import Path
 from typing import Any, Optional
 
 import cv2
 import numpy as np
 from dotenv import load_dotenv
 
-load_dotenv()
+# Always load project .env and override stale Windows/user env vars.
+_PROJECT_ROOT = Path(__file__).resolve().parent
+_ENV_FILE = _PROJECT_ROOT / ".env"
+load_dotenv(_ENV_FILE, override=True)
 
 CINEMATIC_SCHEMA_KEYS = (
     "camera_movement",
@@ -48,12 +52,65 @@ def get_env(key: str, default: Optional[str] = None) -> Optional[str]:
     return value.strip() if value else default
 
 
+def is_valid_gemini_api_key_format(key: Optional[str] = None) -> bool:
+    """Google AI Studio keys start with AIza (not AQ. or other prefixes)."""
+    value = (key or get_env("GEMINI_API_KEY") or "").strip()
+    return bool(value) and value.startswith("AIza") and len(value) >= 35
+
+
+def gemini_key_hint() -> str:
+    key = get_env("GEMINI_API_KEY") or ""
+    if not key.strip():
+        return (
+            "GEMINI_API_KEY is empty in .env. "
+            "Create a key at https://aistudio.google.com/apikey (starts with AIza)."
+        )
+    if key.strip().startswith("AQ."):
+        return (
+            "Your key starts with AQ. — that is NOT a Google AI Studio API key. "
+            "Open https://aistudio.google.com/apikey → Create API key → copy the AIza… key into .env. "
+            "Also remove GEMINI_API_KEY from Windows Environment Variables if set there."
+        )
+    if not key.strip().startswith("AIza"):
+        return (
+            "GEMINI_API_KEY must start with AIza (Google AI Studio). "
+            "Get one at https://aistudio.google.com/apikey — not from Cloud Console OAuth."
+        )
+    return ""
+
+
+def gemini_key_debug_label() -> str:
+    """Safe one-line summary for terminal (never prints full key)."""
+    key = (get_env("GEMINI_API_KEY") or "").strip()
+    if not key:
+        return "GEMINI_API_KEY: (empty) — add AIza key to .env"
+    prefix = key[:4] + "…" if len(key) > 4 else "(short)"
+    if key.startswith("AIza"):
+        return f"GEMINI_API_KEY: {prefix} ({len(key)} chars) — format OK"
+    if key.startswith("AQ."):
+        return f"GEMINI_API_KEY: {prefix} — INVALID (use AIza from AI Studio, not AQ.)"
+    return f"GEMINI_API_KEY: {prefix} — INVALID (must start with AIza)"
+
+
 def has_llm_credentials() -> bool:
-    return bool(get_env("OPENAI_API_KEY") or get_env("GEMINI_API_KEY"))
+    if get_env("OPENAI_API_KEY"):
+        return True
+    return is_valid_gemini_api_key_format()
 
 
 def has_stt_credentials() -> bool:
-    return bool(get_env("OPENAI_API_KEY")) or get_env("STT_BACKEND", "faster-whisper") == "faster-whisper"
+    backend = get_env("STT_BACKEND", "").lower()
+    if backend == "openai":
+        return bool(get_env("OPENAI_API_KEY"))
+    if backend == "gemini":
+        return is_valid_gemini_api_key_format()
+    if backend == "faster-whisper":
+        return True
+    if get_env("OPENAI_API_KEY"):
+        return True
+    if is_valid_gemini_api_key_format():
+        return True
+    return True  # local faster-whisper fallback when no cloud keys
 
 
 def draw_overlay(
@@ -151,10 +208,32 @@ def format_cinematic_json(data: dict[str, Any]) -> str:
 
 
 def format_error(message: str) -> str:
+    if "API_KEY_INVALID" in message or "API key not valid" in message:
+        hint = gemini_key_hint()
+        if hint:
+            return f"⚠ Gemini API key rejected. {hint}"
     return f"⚠ {message}"
 
 
 def system_status() -> str:
-    llm = "[OK] LLM Ready" if has_llm_credentials() else "[!!] LLM Key Missing"
-    stt = "[OK] STT Ready" if has_stt_credentials() else "[!!] STT Unavailable"
+    gemini_hint = gemini_key_hint()
+    if get_env("LLM_PROVIDER", "").lower() == "gemini" or get_env("GEMINI_API_KEY"):
+        if gemini_hint:
+            llm = f"[!!] LLM: {gemini_hint}"
+        else:
+            llm = "[OK] LLM Ready (Gemini)"
+    elif get_env("OPENAI_API_KEY"):
+        llm = "[OK] LLM Ready (OpenAI)"
+    elif has_llm_credentials():
+        llm = "[OK] LLM Ready"
+    else:
+        llm = "[!!] LLM Key Missing"
+
+    stt_backend = get_env("STT_BACKEND", "").lower()
+    if stt_backend == "gemini" and gemini_hint:
+        stt = f"[!!] STT: {gemini_hint}"
+    elif has_stt_credentials():
+        stt = "[OK] STT Ready"
+    else:
+        stt = "[!!] STT Unavailable"
     return f"{llm}  |  {stt}  |  [OK] Gesture Engine Ready"

@@ -11,7 +11,14 @@ import numpy as np
 
 from gesture_detector import GestureDetector
 from llm_cinematic import generate_cinematic_safe
-from utils import format_error, has_llm_credentials, patch_gradio_client, system_status
+from utils import (
+    format_error,
+    gemini_key_debug_label,
+    gemini_key_hint,
+    has_llm_credentials,
+    patch_gradio_client,
+    system_status,
+)
 from voice_to_text import preload_stt, transcribe_audio_safe
 from webcam import find_working_camera, is_black_frame, read_frame
 
@@ -244,6 +251,12 @@ def build_ui() -> gr.Blocks:
             </div>
             """
         )
+        _gemini_warn = gemini_key_hint()
+        if _gemini_warn:
+            gr.Markdown(
+                f"### ⚠ Gemini API key problem\n{_gemini_warn}",
+                elem_classes=["status-bar"],
+            )
         status_bar = gr.Markdown(system_status(), elem_classes=["status-bar"])
 
         with gr.Row():
@@ -255,7 +268,7 @@ def build_ui() -> gr.Blocks:
                     pause_btn = gr.Button("⏸ Pause Webcam", scale=1, size="sm")
                     restart_cam_btn = gr.Button("🔄 Restart Camera", scale=1, size="sm")
                     reset_view_btn = gr.Button("↺ Reset Zoom/Pan", scale=1, size="sm")
-                    sensitivity = gr.Slider(0.5, 1.5, value=1.0, step=0.1, label="Gesture Sensitivity", scale=2)
+                    sensitivity = gr.Slider(0.5, 1.5, value=0.75, step=0.1, label="Gesture Sensitivity (lower = easier)", scale=2)
                 with gr.Row():
                     sens_label = gr.Markdown("Sensitivity: 1.0x — move hand slowly for best accuracy")
                     cam_status = gr.Textbox(label="Camera", value="Connecting…", interactive=False, scale=2)
@@ -305,7 +318,7 @@ def build_ui() -> gr.Blocks:
                         json_box = gr.Code(language="json", lines=10, interactive=False, label="Raw JSON")
 
         # ── Event wiring ──
-        timer = gr.Timer(0.12)
+        timer = gr.Timer(0.09)
         timer.tick(
             fn=process_webcam_tick,
             outputs=[webcam, gesture_box, action_box, confidence_box, fps_box, action_log, cam_status],
@@ -328,9 +341,17 @@ def build_ui() -> gr.Blocks:
 
 
 def main() -> None:
+    print(gemini_key_debug_label())
+    hint = gemini_key_hint()
+    if hint:
+        print("\n" + "=" * 60)
+        print("GEMINI API KEY ERROR")
+        print(hint)
+        print("Edit:", "F:\\Ai Engg Assignment\\.env")
+        print("=" * 60 + "\n")
     print("Pre-loading gesture detector…")
     get_detector()
-    get_detector().set_sensitivity(1.0)
+    get_detector().set_sensitivity(0.75)
     print("Connecting webcam…")
     cap = get_webcam()
     if cap is None:

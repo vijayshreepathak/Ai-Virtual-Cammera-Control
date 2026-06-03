@@ -85,7 +85,7 @@ def test_stt_init():
     from voice_to_text import SpeechToText
 
     stt = SpeechToText()
-    assert stt.backend in ("faster-whisper", "openai")
+    assert stt.backend in ("faster-whisper", "openai", "gemini")
 
 
 def test_llm_init():

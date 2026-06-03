@@ -95,9 +95,10 @@ def ensure_hand_model() -> Path:
     return MODEL_PATH
 
 
-def draw_hand_landmarks(frame: np.ndarray, landmarks, scale_x: float = 1.0, scale_y: float = 1.0) -> None:
+def draw_hand_landmarks(frame: np.ndarray, landmarks) -> None:
     h, w = frame.shape[:2]
-    points = [(int(lm.x * w * scale_x), int(lm.y * h * scale_y)) for lm in landmarks]
+    # Landmarks are normalized 0–1; map directly to the display frame size.
+    points = [(int(lm.x * w), int(lm.y * h)) for lm in landmarks]
 
     for start, end in HAND_CONNECTIONS:
         cv2.line(frame, points[start], points[end], (255, 180, 0), 2)
@@ -108,7 +109,7 @@ def draw_hand_landmarks(frame: np.ndarray, landmarks, scale_x: float = 1.0, scal
 
 def _movement_stats(values: Deque[float]) -> Tuple[float, float]:
     """Return (signed delta, consistency 0-1) for gesture axis."""
-    if len(values) < 6:
+    if len(values) < 4:
         return 0.0, 0.0
 
     seq = list(values)
@@ -127,14 +128,14 @@ class GestureDetector:
 
     def __init__(
         self,
-        history_size: int = 14,
-        pan_threshold: float = 0.09,
-        zoom_threshold: float = 0.018,
-        tilt_threshold: float = 0.07,
-        cooldown_seconds: float = 1.4,
-        detect_every_n: int = 2,
-        min_consistency: float = 0.72,
-        min_confidence: float = 0.52,
+        history_size: int = 10,
+        pan_threshold: float = 0.042,
+        zoom_threshold: float = 0.009,
+        tilt_threshold: float = 0.038,
+        cooldown_seconds: float = 0.85,
+        detect_every_n: int = 1,
+        min_consistency: float = 0.52,
+        min_confidence: float = 0.35,
     ) -> None:
         self.history_size = history_size
         self.pan_threshold = pan_threshold
@@ -150,13 +151,15 @@ class GestureDetector:
             base_options=base_options_module.BaseOptions(model_asset_path=str(model_path)),
             running_mode=vision.RunningMode.VIDEO,
             num_hands=1,
-            min_hand_detection_confidence=0.65,
-            min_hand_presence_confidence=0.55,
-            min_tracking_confidence=0.55,
+            min_hand_detection_confidence=0.5,
+            min_hand_presence_confidence=0.45,
+            min_tracking_confidence=0.45,
         )
         self._landmarker = vision.HandLandmarker.create_from_options(options)
         self._frame_timestamp_ms = 0
         self._tick = 0
+        self._hand_miss_frames = 0
+        self._hand_tracked = False
 
         self._wrist_x_history: Deque[float] = deque(maxlen=history_size)
         self._wrist_y_history: Deque[float] = deque(maxlen=history_size)
@@ -167,18 +170,19 @@ class GestureDetector:
         self._last_trigger_time: float = 0.0
         self._display_gesture_until: float = 0.0
         self._last_landmarks = None
-        self._last_scale = (1.0, 1.0)
 
         self.state = GestureState()
         self.camera = VirtualCamera()
         self._fps_times: Deque[float] = deque(maxlen=30)
 
     def set_sensitivity(self, level: float) -> None:
+        """Lower slider value = easier triggers (lower thresholds)."""
         level = max(0.5, min(1.5, level))
-        self.pan_threshold = 0.09 * level
-        self.zoom_threshold = 0.018 * level
-        self.tilt_threshold = 0.07 * level
-        self.min_confidence = 0.52 + (level - 1.0) * 0.08
+        self.pan_threshold = 0.042 * level
+        self.zoom_threshold = 0.009 * level
+        self.tilt_threshold = 0.038 * level
+        self.min_confidence = max(0.28, 0.35 + (level - 1.0) * 0.06)
+        self.min_consistency = max(0.42, 0.52 + (level - 1.0) * 0.08)
 
     def reset_camera_view(self) -> None:
         self.camera.reset()
@@ -203,8 +207,8 @@ class GestureDetector:
         if (
             abs_x > self.pan_threshold
             and x_cons >= self.min_consistency
-            and abs_x > abs_size * 2.2
-            and abs_x > abs_y * 1.8
+            and abs_x > abs_size * 1.35
+            and abs_x > abs_y * 1.25
         ):
             score = min(1.0, (abs_x / self.pan_threshold) * x_cons * 0.45)
             candidates.append((GestureType.PAN_RIGHT if x_delta > 0 else GestureType.PAN_LEFT, score))
@@ -213,8 +217,8 @@ class GestureDetector:
         if (
             size_ratio > self.zoom_threshold
             and size_cons >= self.min_consistency
-            and abs_size > abs_x * 2.2
-            and abs_size > abs_y * 1.8
+            and abs_size > abs_x * 1.35
+            and abs_size > abs_y * 1.25
         ):
             score = min(1.0, (size_ratio / self.zoom_threshold) * size_cons * 0.4)
             candidates.append((GestureType.ZOOM_IN if size_delta > 0 else GestureType.ZOOM_OUT, score))
@@ -224,8 +228,8 @@ class GestureDetector:
             abs_y > self.tilt_threshold
             and y_cons >= self.min_consistency
             and y_delta < 0
-            and abs_y > abs_x * 1.8
-            and abs_y > abs_size * 1.8
+            and abs_y > abs_x * 1.25
+            and abs_y > abs_size * 1.25
         ):
             score = min(1.0, (abs_y / self.tilt_threshold) * y_cons * 0.4)
             candidates.append((GestureType.TILT_UP, score))
@@ -265,13 +269,11 @@ class GestureDetector:
 
             self._frame_timestamp_ms += 50
             result = self._landmarker.detect_for_video(mp_image, self._frame_timestamp_ms)
-            inv_scale_x = w / DETECT_WIDTH
-            inv_scale_y = h / small.shape[0]
-            self._last_scale = (inv_scale_x, inv_scale_y)
-
             if result.hand_landmarks:
                 hand = result.hand_landmarks[0]
                 self._last_landmarks = hand
+                self._hand_miss_frames = 0
+                self._hand_tracked = True
                 self._wrist_x_history.append(hand[WRIST_INDEX].x)
                 self._wrist_y_history.append(hand[WRIST_INDEX].y)
                 self._hand_size_history.append(self._hand_size(hand))
@@ -292,10 +294,13 @@ class GestureDetector:
                         gesture = self._last_gesture
                         confidence = self._last_confidence
             else:
-                self._last_landmarks = None
-                self._wrist_x_history.clear()
-                self._wrist_y_history.clear()
-                self._hand_size_history.clear()
+                self._hand_miss_frames += 1
+                if self._hand_miss_frames >= 6:
+                    self._last_landmarks = None
+                    self._hand_tracked = False
+                    self._wrist_x_history.clear()
+                    self._wrist_y_history.clear()
+                    self._hand_size_history.clear()
 
         elif now < self._display_gesture_until and self._last_gesture != GestureType.NONE:
             gesture = self._last_gesture
@@ -305,10 +310,16 @@ class GestureDetector:
         frame = self.camera.apply_to_frame(frame)
 
         if self._last_landmarks is not None:
-            draw_hand_landmarks(frame, self._last_landmarks, *self._last_scale)
+            draw_hand_landmarks(frame, self._last_landmarks)
 
         action = GESTURE_ACTIONS.get(gesture, "Idle")
-        gesture_label = gesture.value.replace("_", " ").title() if gesture != GestureType.NONE else "No Gesture"
+        if gesture != GestureType.NONE:
+            gesture_label = gesture.value.replace("_", " ").title()
+        elif self._hand_tracked:
+            gesture_label = "Hand Tracked"
+            action = "Move slowly to trigger"
+        else:
+            gesture_label = "No Gesture"
 
         elapsed = time.perf_counter() - t0
         self._fps_times.append(elapsed)

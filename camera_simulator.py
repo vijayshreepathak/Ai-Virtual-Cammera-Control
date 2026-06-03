@@ -55,7 +55,7 @@ class VirtualCamera:
         elif gesture == "tilt_up":
             self._target_pan_y = max(-self.PAN_MAX, self._target_pan_y - self.TILT_STEP)
 
-    def smooth_update(self, alpha: float = 0.14) -> None:
+    def smooth_update(self, alpha: float = 0.28) -> None:
         self.state.zoom += (self._target_zoom - self.state.zoom) * alpha
         self.state.pan_x += (self._target_pan_x - self.state.pan_x) * alpha
         self.state.pan_y += (self._target_pan_y - self.state.pan_y) * alpha

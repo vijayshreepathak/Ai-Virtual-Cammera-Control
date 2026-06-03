@@ -1,4 +1,4 @@
-"""Speech-to-text pipeline using OpenAI Whisper API or faster-whisper."""
+"""Speech-to-text: OpenAI Whisper API, Gemini audio, or local faster-whisper."""
 
 from __future__ import annotations
 
@@ -8,7 +8,9 @@ from typing import Optional, Tuple
 
 import numpy as np
 
-from utils import format_error, get_env
+from utils import format_error, gemini_key_hint, get_env, is_valid_gemini_api_key_format
+
+_VALID_STT_BACKENDS = frozenset({"openai", "gemini", "faster-whisper"})
 
 
 class SpeechToText:
@@ -20,15 +22,29 @@ class SpeechToText:
             self.backend = configured
         elif get_env("OPENAI_API_KEY"):
             self.backend = "openai"
+        elif get_env("GEMINI_API_KEY"):
+            self.backend = "gemini"
         else:
             self.backend = "faster-whisper"
         self._model = None
 
     def preload(self) -> str:
+        if self.backend not in _VALID_STT_BACKENDS:
+            raise RuntimeError(
+                f"Unknown STT_BACKEND '{self.backend}'. "
+                "Use openai, gemini, or faster-whisper."
+            )
         if self.backend == "openai":
             if not get_env("OPENAI_API_KEY"):
                 raise RuntimeError("OPENAI_API_KEY is required for OpenAI Whisper.")
             return "openai-whisper (cloud)"
+        if self.backend == "gemini":
+            if not get_env("GEMINI_API_KEY"):
+                raise RuntimeError("GEMINI_API_KEY is required for Gemini transcription.")
+            hint = gemini_key_hint()
+            if hint:
+                raise RuntimeError(hint)
+            return f"gemini ({get_env('GEMINI_MODEL', 'gemini-2.0-flash')})"
         self._load_faster_whisper()
         return f"faster-whisper ({get_env('WHISPER_MODEL_SIZE', 'tiny')})"
 
@@ -68,6 +84,39 @@ class SpeechToText:
                 language="en",
             )
         return response.text.strip()
+
+    def _transcribe_gemini(self, audio_path: str) -> str:
+        api_key = get_env("GEMINI_API_KEY")
+        if not api_key:
+            raise RuntimeError("GEMINI_API_KEY is required for Gemini transcription.")
+        hint = gemini_key_hint()
+        if hint:
+            raise RuntimeError(hint)
+
+        import google.generativeai as genai
+
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel(get_env("GEMINI_MODEL", "gemini-2.0-flash"))
+        uploaded = None
+        try:
+            uploaded = genai.upload_file(audio_path, mime_type="audio/wav")
+            response = model.generate_content(
+                [
+                    "Transcribe this audio to English. "
+                    "Return only the spoken words, no commentary or labels.",
+                    uploaded,
+                ]
+            )
+            text = getattr(response, "text", None)
+            if not text:
+                raise RuntimeError("Gemini returned an empty transcription.")
+            return text.strip()
+        finally:
+            if uploaded is not None:
+                try:
+                    genai.delete_file(uploaded.name)
+                except Exception:
+                    pass
 
     def _to_mono_int16(self, audio_data: np.ndarray) -> np.ndarray:
         if audio_data.ndim == 2:
@@ -109,6 +158,8 @@ class SpeechToText:
         try:
             if self.backend == "openai":
                 text = self._transcribe_openai(temp_path)
+            elif self.backend == "gemini":
+                text = self._transcribe_gemini(temp_path)
             else:
                 text = self._transcribe_faster_whisper(temp_path)
         finally:

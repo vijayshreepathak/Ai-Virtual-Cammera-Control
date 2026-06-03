@@ -9,7 +9,9 @@ from utils import (
     extract_json_object,
     format_cinematic_output,
     format_error,
+    gemini_key_hint,
     get_env,
+    is_valid_gemini_api_key_format,
     validate_cinematic_output,
 )
 
@@ -77,6 +79,11 @@ class CinematicGenerator:
         api_key = get_env("GEMINI_API_KEY")
         if not api_key:
             raise RuntimeError("GEMINI_API_KEY is not set.")
+        hint = gemini_key_hint()
+        if hint:
+            raise RuntimeError(hint)
+        if not is_valid_gemini_api_key_format(api_key):
+            raise RuntimeError(gemini_key_hint() or "Invalid GEMINI_API_KEY format.")
 
         import google.generativeai as genai
 
