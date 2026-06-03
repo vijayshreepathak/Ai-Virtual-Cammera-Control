@@ -4,6 +4,8 @@ Real-time **AI virtual camera** proof-of-concept: control a simulated camera wit
 
 **Repository:** [github.com/vijayshreepathak/Ai-Virtual-Cammera-Control](https://github.com/vijayshreepathak/Ai-Virtual-Cammera-Control)
 
+📄 **Technical submission doc:** [TECHNICAL_DOCUMENTATION.md](TECHNICAL_DOCUMENTATION.md) — full system architecture, data flows, tech stack, and module specs.
+
 ---
 
 ## Overview
@@ -47,7 +49,8 @@ Real-time **AI virtual camera** proof-of-concept: control a simulated camera wit
 ├── run.bat                # Windows: smoke test + launch
 ├── requirements.txt
 ├── .env.example           # Template (copy to .env)
-└── README.md
+├── README.md              # User guide + architecture diagrams
+└── TECHNICAL_DOCUMENTATION.md  # Full technical submission report
 ```
 
 On first run, `models/hand_landmarker.task` is downloaded automatically (gitignored).
@@ -256,15 +259,71 @@ Optional: enable **Use last gesture as LLM context** to combine gesture + voice.
 
 ---
 
-## Architecture Flow
+## System Architecture
 
-```text
-Webcam → MediaPipe → Gesture → Virtual Camera (zoom/pan preview)
-                    ↓
-Microphone → STT (Gemini/OpenAI/Whisper) → Transcript
-                    ↓
-              LLM (Gemini/OpenAI) → Validated cinematic JSON
+### High-Level Architecture
+
+```mermaid
+flowchart TB
+    subgraph Client["Client Layer"]
+        Browser["Web Browser"]
+        WebcamHW["Webcam"]
+        MicHW["Microphone"]
+    end
+
+    subgraph App["Application — Python / Gradio"]
+        UI["app.py"]
+        Timer["Frame Timer"]
+        VoiceBtn["Voice Pipeline"]
+    end
+
+    subgraph Vision["Vision Pipeline"]
+        WebcamMod["webcam.py"]
+        Gesture["gesture_detector.py"]
+        MediaPipe["MediaPipe Hand Landmarker"]
+        VCam["camera_simulator.py"]
+    end
+
+    subgraph AI["Voice & AI Pipeline"]
+        STT["voice_to_text.py"]
+        LLM["llm_cinematic.py"]
+        Utils["utils.py"]
+    end
+
+    subgraph Cloud["External APIs"]
+        Gemini["Google Gemini"]
+        OpenAI["OpenAI"]
+        Whisper["faster-whisper — local"]
+    end
+
+    Browser <--> UI
+    WebcamHW --> WebcamMod
+    MicHW --> VoiceBtn
+    UI --> Timer --> WebcamMod --> Gesture
+    Gesture --> MediaPipe
+    Gesture --> VCam --> UI
+    VoiceBtn --> STT --> LLM
+    STT --> Gemini & OpenAI & Whisper
+    LLM --> Gemini & OpenAI
+    Utils --> UI
 ```
+
+### Data Flow Summary
+
+```mermaid
+flowchart LR
+    A["Webcam Frame"] --> B["MediaPipe Landmarks"]
+    B --> C["Gesture Classifier"]
+    C --> D["Virtual Camera"]
+    D --> E["Gradio Preview"]
+
+    F["Microphone Audio"] --> G["Speech-to-Text"]
+    G --> H["Transcript"]
+    H --> I["LLM Cinematic Engine"]
+    I --> J["Validated JSON"]
+```
+
+See [TECHNICAL_DOCUMENTATION.md](TECHNICAL_DOCUMENTATION.md) for sequence diagrams, module dependencies, and full technical specs.
 
 ---
 
@@ -312,17 +371,22 @@ Expected output: all `[OK]` checks (imports, utils, gesture, webcam, voice, LLM,
 
 ## Tech Stack
 
-- Python 3.9+
-- OpenCV, MediaPipe Tasks API, NumPy, SciPy
-- Gradio 4.x, python-dotenv
-- google-generativeai (Gemini)
-- openai (optional)
-- faster-whisper (optional local STT)
+| Category | Technology |
+|----------|------------|
+| Language | Python 3.9+ |
+| UI | Gradio 4.x |
+| Vision | OpenCV, MediaPipe Tasks API, NumPy |
+| Audio | SciPy (WAV I/O) |
+| STT | Gemini API, OpenAI Whisper, faster-whisper |
+| LLM | Gemini, OpenAI GPT |
+| Config | python-dotenv |
+
+Full stack details, design patterns, and performance notes → [TECHNICAL_DOCUMENTATION.md](TECHNICAL_DOCUMENTATION.md)
 
 ---
 
 ## Author
 
-**Created by Vijayshree**
+**Written by Vijayshree**
 
 GitHub: [vijayshreepathak/Ai-Virtual-Cammera-Control](https://github.com/vijayshreepathak/Ai-Virtual-Cammera-Control)
